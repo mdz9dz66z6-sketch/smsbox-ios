@@ -10,6 +10,29 @@ let START_URL = URL(string: "https://box.1000.yun/")!
 /// 仅对这些主机允许自签名/无效证书（自建域名用 Let's Encrypt 可清空此集合）
 let TRUSTED_HOSTS: Set<String> = ["box.1000.yun"]
 
+/// 把窗口安全区（刘海/状态栏高度、Home 指示条）注入页面的 CSS 变量。
+/// 不走 WKWebView 的 env()（部分环境不透传），由壳直接注入，日夜模式
+/// 由页面自己控制（页面背景一直画到状态栏底下，跟随主题无割裂）。
+func injectSafeInsets(_ wv: WKWebView) {
+    let window = UIApplication.shared.connectedScenes
+        .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+        .first
+    let top = window?.safeAreaInsets.top ?? 0
+    let bottom = window?.safeAreaInsets.bottom ?? 0
+    let js = "document.documentElement.style.setProperty('--sat','\(Int(top))px');" +
+             "document.documentElement.style.setProperty('--sab','\(Int(bottom))px');"
+    wv.evaluateJavaScript(js, completionHandler: nil)
+}
+
+/// 观察自身安全区变化（旋转屏幕等）触发重新注入
+final class InsetsWebView: WKWebView {
+    var onInsetsChange: (() -> Void)?
+    override func safeAreaInsetsDidChange() {
+        super.safeAreaInsetsDidChange()
+        onInsetsChange?()
+    }
+}
+
 struct WebView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -18,10 +41,13 @@ struct WebView: UIViewRepresentable {
         // 通话页面需要：内联自动播放 + getUserMedia 免手势
         cfg.allowsInlineMediaPlayback = true
         cfg.allowsPictureInPictureMediaPlayback = false
-        let wv = WKWebView(frame: .zero, configuration: cfg)
+        let wv = InsetsWebView(frame: .zero, configuration: cfg)
         wv.navigationDelegate = context.coordinator
         wv.uiDelegate = context.coordinator
         wv.allowsBackForwardNavigationGestures = true
+        wv.onInsetsChange = { [weak wv] in
+            if let wv { injectSafeInsets(wv) }
+        }
         wv.load(URLRequest(url: START_URL))
         return wv
     }
@@ -42,6 +68,11 @@ struct WebView: UIViewRepresentable {
             completionHandler(.useCredential, URLCredential(trust: trust))
         }
 
+        // 每次页面加载完成注入一次（SPA 内部跳转不刷新页面，无需重复）
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            injectSafeInsets(webView)
+        }
+
         // getUserMedia 麦克风授权请求：交给系统权限弹窗（Info.plist 已声明用途）
         func webView(_ webView: WKWebView,
                      requestMediaCapturePermissionFor origin: WKSecurityOrigin,
@@ -50,18 +81,6 @@ struct WebView: UIViewRepresentable {
                      decisionHandler: @escaping (WKPermissionDecision) -> Void) {
             decisionHandler(.grant)
         }
-    }
-}
-
-/// 顶部安全区补底色：WebView 顶部已回到安全区内，刘海/状态栏露出的窄条
-/// 用网页同款背景色填充（浅 #f1f3f5 / 深 #1f242b），跟随系统外观
-struct SafeAreaFill: View {
-    var body: some View {
-        Color(UITraitCollection.current.userInterfaceStyle == .dark
-              ? UIColor(red: 0x1f/255, green: 0x24/255, blue: 0x2b/255, alpha: 1)
-              : UIColor(red: 0xf1/255, green: 0xf3/255, blue: 0xf5/255, alpha: 1))
-            .ignoresSafeArea()
-            .accessibilityHidden(true)
     }
 }
 
@@ -76,11 +95,10 @@ struct SmsBoxApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                SafeAreaFill()
-                // 顶部尊重安全区（导航栏永不进刘海），底部铺满到底栏避让照旧
-                WebView().ignoresSafeArea(.container, edges: .bottom)
-            }
+            // 全屏铺到刘海下：状态栏底下是页面自己的背景色，日夜模式无割裂；
+            // 刘海高度由壳注入 --sat，页面顶栏自动下移
+            WebView()
+                .ignoresSafeArea()
         }
     }
 }
