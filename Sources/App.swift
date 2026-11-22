@@ -16,7 +16,7 @@ struct WebView: UIViewRepresentable {
         let cfg = WKWebViewConfiguration()
         // 通话页面需要：内联自动播放 + getUserMedia 免手势
         cfg.allowsInlineMediaPlayback = true
-        cfg.mediaTypesRequiringUserAction = []
+        cfg.mediaTypesRequiringUserActionForAutoplay = []
         cfg.allowsPictureInPictureMediaPlayback = false
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.navigationDelegate = context.coordinator
