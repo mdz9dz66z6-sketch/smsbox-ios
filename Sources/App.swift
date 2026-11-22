@@ -11,7 +11,7 @@ let START_URL = URL(string: "https://box.1000.yun/")!
 let TRUSTED_HOSTS: Set<String> = ["box.1000.yun"]
 
 /// 与网页侧 toast 自证的版本号一致
-let APP_VERSION = "1.0.8"
+let APP_VERSION = "1.0.9"
 
 /* 最终方案（网页保持原始全屏渲染）：
    WebView 铺满全屏，页面自己把背景画到状态栏底下、自己处理主题动画；
@@ -109,10 +109,12 @@ struct WebView: UIViewRepresentable {
             completionHandler(.useCredential, URLCredential(trust: trust))
         }
 
-        // getUserMedia 麦克风授权请求：交给系统权限弹窗（Info.plist 已声明用途）
+        // getUserMedia 麦克风/摄像头授权：网页层直接放行（注意参数标签必须是
+        // initiatedByFrame——之前写成 initiatedBy 导致协议不匹配、delegate 静默
+        // 失效，WebKit 每次都走默认弹窗。系统层 TCC 权限在 App 启动时统一申请）
         func webView(_ webView: WKWebView,
                      requestMediaCapturePermissionFor origin: WKSecurityOrigin,
-                     initiatedBy frame: WKFrameInfo,
+                     initiatedByFrame frame: WKFrameInfo,
                      type: WKMediaCaptureType,
                      decisionHandler: @escaping (WKPermissionDecision) -> Void) {
             decisionHandler(.grant)
@@ -123,6 +125,10 @@ struct WebView: UIViewRepresentable {
 @main
 struct SmsBoxApp: App {
     init() {
+        // 系统层（TCC）麦克风权限：启动时申请一次。 granted 后网页层
+        // requestMediaCapturePermissionFor 的 .grant 才能真正静默生效；
+        // 已授权过时此调用无感知，首次安装只会弹这一次系统授权框
+        AVAudioSession.sharedInstance().requestRecordPermission { _ in }
         // 通话场景的音频路由：扬声器+麦克风，蓝牙耳机可用
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord,
