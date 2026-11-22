@@ -10,29 +10,34 @@ let START_URL = URL(string: "https://box.1000.yun/")!
 /// 仅对这些主机允许自签名/无效证书（自建域名用 Let's Encrypt 可清空此集合）
 let TRUSTED_HOSTS: Set<String> = ["box.1000.yun"]
 
-/// 与网页 side 的 __APP_VER 保持一致（页面启动时会 toast 出来，自证装的是新包）
-let APP_VERSION = "1.0.5"
-
-/// 页面主题上报桥：网页切日/夜时 postMessage 通知壳，安全区填色跟随页面主题。
-/// 页面没上报时（桥未生效）回退到系统外观，不会黑/白错乱。
-final class ThemeBridge: NSObject, WKScriptMessageHandler {
-    var onTheme: ((Bool) -> Void)?
-    func userContentController(_ userContentController: WKUserContentController,
-                               didReceive message: WKScriptMessage) {
-        guard message.name == "native",
-              let d = message.body as? [String: Any],
-              let t = d["theme"] as? String else { return }
-        onTheme?(t == "dark")
-    }
-}
+/// 与网页侧 toast 自证的版本号一致
+let APP_VERSION = "1.0.6"
 
 struct WebView: UIViewRepresentable {
-    @Binding var pageDark: Bool
+    var pageDark: Binding<Bool>
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        let bridge = ThemeBridge()
+        var pageDark: Binding<Bool>?
+        var timer: Timer?
+
+        /// 轮询页面主题：直接执行 JS 读 <html data-theme>，
+        /// 不依赖消息注册等任何链路，必然可靠（0.6s 一次，开销可忽略）
+        func startPolling(_ wv: WKWebView) {
+            timer?.invalidate()
+            timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self, weak wv] _ in
+                guard let self, let wv else { return }
+                wv.evaluateJavaScript("document.documentElement.dataset.theme||''") { res, _ in
+                    let dark = (res as? String) == "dark"
+                    DispatchQueue.main.async {
+                        if self.pageDark?.wrappedValue != dark { self.pageDark?.wrappedValue = dark }
+                    }
+                }
+            }
+        }
+
+        deinit { timer?.invalidate() }
 
         // 自签名证书兜底（仅限 TRUSTED_HOSTS）
         func webView(_ webView: WKWebView,
@@ -62,12 +67,6 @@ struct WebView: UIViewRepresentable {
         // 通话页面需要：内联自动播放 + getUserMedia 免手势
         cfg.allowsInlineMediaPlayback = true
         cfg.allowsPictureInPictureMediaPlayback = false
-
-        let bridge = context.coordinator.bridge
-        bridge.onTheme = { dark in
-            DispatchQueue.main.async { self.pageDark = dark }
-        }
-        cfg.userContentController.add(bridge, name: "native")
         // 壳版本标记：页面检测到就 toast，证明装的是哪个版本的壳
         cfg.userContentController.addUserScript(WKUserScript(
             source: "window.__APP_VER='\(APP_VERSION)';",
@@ -78,11 +77,15 @@ struct WebView: UIViewRepresentable {
         wv.navigationDelegate = context.coordinator
         wv.uiDelegate = context.coordinator
         wv.allowsBackForwardNavigationGestures = true
+        context.coordinator.pageDark = pageDark
+        context.coordinator.startPolling(wv)
         wv.load(URLRequest(url: START_URL))
         return wv
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        context.coordinator.pageDark = pageDark
+    }
 }
 
 @main
@@ -97,8 +100,7 @@ struct SmsBoxApp: App {
     var body: some Scene {
         WindowGroup {
             ZStack {
-                // 刘海/Home 条露出的窄条：颜色跟随页面主题（页面通过桥上报），
-                // 页面未上报前先用系统外观兜底
+                // 刘海/Home 条露出的窄条：颜色由轮询到的页面主题驱动（同页面底色）
                 (pageDark ? Color(red: 0x1f/255, green: 0x24/255, blue: 0x2b/255)
                           : Color(red: 0xf1/255, green: 0xf3/255, blue: 0xf5/255))
                     .ignoresSafeArea()
