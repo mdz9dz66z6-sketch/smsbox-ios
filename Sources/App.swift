@@ -10,51 +10,30 @@ let START_URL = URL(string: "https://box.1000.yun/")!
 /// 仅对这些主机允许自签名/无效证书（自建域名用 Let's Encrypt 可清空此集合）
 let TRUSTED_HOSTS: Set<String> = ["box.1000.yun"]
 
-/// 把窗口安全区（刘海/状态栏高度、Home 指示条）注入页面的 CSS 变量。
-/// 不走 WKWebView 的 env()（部分环境不透传），由壳直接注入，日夜模式
-/// 由页面自己控制（页面背景一直画到状态栏底下，跟随主题无割裂）。
-func injectSafeInsets(_ wv: WKWebView) {
-    let window = UIApplication.shared.connectedScenes
-        .compactMap { ($0 as? UIWindowScene)?.keyWindow }
-        .first
-    let top = window?.safeAreaInsets.top ?? 0
-    let bottom = window?.safeAreaInsets.bottom ?? 0
-    let js = "document.documentElement.style.setProperty('--sat','\(Int(top))px');" +
-             "document.documentElement.style.setProperty('--sab','\(Int(bottom))px');"
-    wv.evaluateJavaScript(js, completionHandler: nil)
-}
+/// 与网页 side 的 __APP_VER 保持一致（页面启动时会 toast 出来，自证装的是新包）
+let APP_VERSION = "1.0.3"
 
-/// 观察自身安全区变化（旋转屏幕等）触发重新注入
-final class InsetsWebView: WKWebView {
-    var onInsetsChange: (() -> Void)?
-    override func safeAreaInsetsDidChange() {
-        super.safeAreaInsetsDidChange()
-        onInsetsChange?()
+/// 页面主题上报桥：网页切日/夜时 postMessage 通知壳，安全区填色跟随页面主题。
+/// 页面没上报时（桥未生效）回退到系统外观，不会黑/白错乱。
+final class ThemeBridge: NSObject, WKScriptMessageHandler {
+    var onTheme: ((Bool) -> Void)?
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard message.name == "native",
+              let d = message.body as? [String: Any],
+              let t = d["theme"] as? String else { return }
+        onTheme?(t == "dark")
     }
 }
 
 struct WebView: UIViewRepresentable {
+    @Binding var pageDark: Bool
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> WKWebView {
-        let cfg = WKWebViewConfiguration()
-        // 通话页面需要：内联自动播放 + getUserMedia 免手势
-        cfg.allowsInlineMediaPlayback = true
-        cfg.allowsPictureInPictureMediaPlayback = false
-        let wv = InsetsWebView(frame: .zero, configuration: cfg)
-        wv.navigationDelegate = context.coordinator
-        wv.uiDelegate = context.coordinator
-        wv.allowsBackForwardNavigationGestures = true
-        wv.onInsetsChange = { [weak wv] in
-            if let wv { injectSafeInsets(wv) }
-        }
-        wv.load(URLRequest(url: START_URL))
-        return wv
-    }
-
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
-
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        let bridge = ThemeBridge()
+
         // 自签名证书兜底（仅限 TRUSTED_HOSTS）
         func webView(_ webView: WKWebView,
                      didReceive challenge: URLAuthenticationChallenge,
@@ -68,11 +47,6 @@ struct WebView: UIViewRepresentable {
             completionHandler(.useCredential, URLCredential(trust: trust))
         }
 
-        // 每次页面加载完成注入一次（SPA 内部跳转不刷新页面，无需重复）
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            injectSafeInsets(webView)
-        }
-
         // getUserMedia 麦克风授权请求：交给系统权限弹窗（Info.plist 已声明用途）
         func webView(_ webView: WKWebView,
                      requestMediaCapturePermissionFor origin: WKSecurityOrigin,
@@ -82,6 +56,33 @@ struct WebView: UIViewRepresentable {
             decisionHandler(.grant)
         }
     }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let cfg = WKWebViewConfiguration()
+        // 通话页面需要：内联自动播放 + getUserMedia 免手势
+        cfg.allowsInlineMediaPlayback = true
+        cfg.allowsPictureInPictureMediaPlayback = false
+
+        let bridge = context.coordinator.bridge
+        bridge.onTheme = { dark in
+            DispatchQueue.main.async { self.pageDark = dark }
+        }
+        cfg.userContentController.add(bridge, name: "native")
+        // 壳版本标记：页面检测到就 toast，证明装的是哪个版本的壳
+        cfg.userContentController.addUserScript(WKUserScript(
+            source: "window.__APP_VER='\(APP_VERSION)';",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true))
+
+        let wv = WKWebView(frame: .zero, configuration: cfg)
+        wv.navigationDelegate = context.coordinator
+        wv.uiDelegate = context.coordinator
+        wv.allowsBackForwardNavigationGestures = true
+        wv.load(URLRequest(url: START_URL))
+        return wv
+    }
+
+    func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
 @main
@@ -95,10 +96,16 @@ struct SmsBoxApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            // 全屏铺到刘海下：状态栏底下是页面自己的背景色，日夜模式无割裂；
-            // 刘海高度由壳注入 --sat，页面顶栏自动下移
-            WebView()
-                .ignoresSafeArea()
+            ZStack {
+                // 刘海/Home 条露出的窄条：颜色跟随页面主题（页面通过桥上报），
+                // 页面未上报前先用系统外观兜底
+                (pageDark ? Color(red: 0x1f/255, green: 0x24/255, blue: 0x2b/255)
+                          : Color(red: 0xf1/255, green: 0xf3/255, blue: 0xf5/255))
+                    .ignoresSafeArea()
+                // WebView 完整放在安全区内：几何上不可能与刘海/状态栏/Home 条重叠
+                WebView(pageDark: $pageDark)
+            }
         }
     }
+    @State private var pageDark = UITraitCollection.current.userInterfaceStyle == .dark
 }
