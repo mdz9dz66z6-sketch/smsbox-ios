@@ -1,6 +1,7 @@
 import SwiftUI
 import WebKit
 import AVFoundation
+import UIKit
 
 /// 启动地址：改成自己的部署地址即可。App 只是个壳，页面内容全部来自线上，
 /// 服务器上的网页更新 = App 内容即时更新（天然热更新，无需重新打包签名）。
@@ -52,6 +53,18 @@ struct WebView: UIViewRepresentable {
     }
 }
 
+/// 顶部安全区补底色：WebView 顶部已回到安全区内，刘海/状态栏露出的窄条
+/// 用网页同款背景色填充（浅 #f1f3f5 / 深 #1f242b），跟随系统外观
+struct SafeAreaFill: View {
+    var body: some View {
+        Color(UITraitCollection.current.userInterfaceStyle == .dark
+              ? UIColor(red: 0x1f/255, green: 0x24/255, blue: 0x2b/255, alpha: 1)
+              : UIColor(red: 0xf1/255, green: 0xf3/255, blue: 0xf5/255, alpha: 1))
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
+    }
+}
+
 @main
 struct SmsBoxApp: App {
     init() {
@@ -63,8 +76,11 @@ struct SmsBoxApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            WebView()
-                .ignoresSafeArea()
+            ZStack {
+                SafeAreaFill()
+                // 顶部尊重安全区（导航栏永不进刘海），底部铺满到底栏避让照旧
+                WebView().ignoresSafeArea(.container, edges: .bottom)
+            }
         }
     }
 }
