@@ -11,7 +11,7 @@ let START_URL = URL(string: "https://box.1000.yun/")!
 let TRUSTED_HOSTS: Set<String> = ["box.1000.yun"]
 
 /// 与网页侧 toast 自证的版本号一致
-let APP_VERSION = "1.0.6"
+let APP_VERSION = "1.0.7"
 
 struct WebView: UIViewRepresentable {
     var pageDark: Binding<Bool>
@@ -23,10 +23,10 @@ struct WebView: UIViewRepresentable {
         var timer: Timer?
 
         /// 轮询页面主题：直接执行 JS 读 <html data-theme>，
-        /// 不依赖消息注册等任何链路，必然可靠（0.6s 一次，开销可忽略）
+        /// 0.15s 一次保证切换瞬间捕获（页面渐变动画 340ms，见 main.js applyTheme）
         func startPolling(_ wv: WKWebView) {
             timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self, weak wv] _ in
+            timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self, weak wv] _ in
                 guard let self, let wv else { return }
                 wv.evaluateJavaScript("document.documentElement.dataset.theme||''") { res, _ in
                     let dark = (res as? String) == "dark"
@@ -100,10 +100,17 @@ struct SmsBoxApp: App {
     var body: some Scene {
         WindowGroup {
             ZStack {
-                // 刘海/Home 条露出的窄条：颜色由轮询到的页面主题驱动（同页面底色）
-                (pageDark ? Color(red: 0x1f/255, green: 0x24/255, blue: 0x2b/255)
-                          : Color(red: 0xf1/255, green: 0xf3/255, blue: 0xf5/255))
-                    .ignoresSafeArea()
+                // 刘海/Home 条露出的窄条：颜色由轮询到的页面主题驱动。
+                // 动画时长与页面主题渐变（340ms）完全一致，同步过渡不闪烁
+                Group {
+                    if pageDark {
+                        Color(red: 0x1f/255, green: 0x24/255, blue: 0x2b/255)
+                    } else {
+                        Color(red: 0xf1/255, green: 0xf3/255, blue: 0xf5/255)
+                    }
+                }
+                .ignoresSafeArea()
+                .animation(.easeInOut(duration: 0.34), value: pageDark)
                 // WebView 完整放在安全区内：几何上不可能与刘海/状态栏/Home 条重叠
                 WebView(pageDark: $pageDark)
             }
