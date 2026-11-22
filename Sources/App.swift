@@ -79,12 +79,13 @@ struct WebView: UIViewRepresentable {
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         // 每次页面加载完成 + 旋转后，多次重试注入直到成功
-        func injectWithRetries(_ wv: InsetsWebView) {
+        func injectWithRetries(_ wv: WKWebView) {
+            guard let iv = wv as? InsetsWebView else { return }
             for d in [0.05, 0.3, 0.8, 1.6, 3.0] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak wv] in
-                    guard let wv, !wv.injected else { return }
-                    injectSafeInsets(wv) { ok in
-                        if ok { wv.injected = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak iv] in
+                    guard let iv, !iv.injected else { return }
+                    injectSafeInsets(iv) { ok in
+                        if ok { iv.injected = true }
                     }
                 }
             }
