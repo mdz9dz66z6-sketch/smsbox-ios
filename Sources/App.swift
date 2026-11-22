@@ -11,7 +11,7 @@ let START_URL = URL(string: "https://box.1000.yun/")!
 let TRUSTED_HOSTS: Set<String> = ["box.1000.yun"]
 
 /// 与网页侧 toast 自证的版本号一致
-let APP_VERSION = "1.0.9"
+let APP_VERSION = "1.0.10"
 
 /* 最终方案（网页保持原始全屏渲染）：
    WebView 铺满全屏，页面自己把背景画到状态栏底下、自己处理主题动画；
@@ -62,6 +62,10 @@ struct WebView: UIViewRepresentable {
             source: "window.__APP_VER='\(APP_VERSION)';",
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true))
+        // 音频路由桥：网页 voice.js 的 applyOutMode 会 postMessage 过来
+        // （'speaker' / 'earpiece'）。WKWebView 里网页自己的
+        // navigator.audioSession 切换不生效，必须由壳改 AVAudioSession
+        cfg.userContentController.add(context.coordinator, name: "audioRoute")
 
         let wv = InsetsWebView(frame: .zero, configuration: cfg)
         wv.navigationDelegate = context.coordinator
@@ -77,7 +81,25 @@ struct WebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
-    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+        // 网页请求切换听筒/外放：直接改 AVAudioSession 路由
+        // （.defaultToSpeaker 有 = 外放；无 + override .none = 听筒）
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            guard message.name == "audioRoute" else { return }
+            let want = String(describing: message.body)
+            let session = AVAudioSession.sharedInstance()
+            if want == "earpiece" {
+                try? session.setCategory(.playAndRecord, options: [.allowBluetooth])
+                try? session.overrideOutputAudioPort(.none)
+            } else {
+                try? session.setCategory(.playAndRecord,
+                                         options: [.defaultToSpeaker, .allowBluetooth])
+                try? session.overrideOutputAudioPort(.speaker)
+            }
+            try? session.setActive(true, options: [.notifyOthersOnDeactivation])
+        }
+
         // 每次页面加载完成 + 旋转后，多次重试注入直到成功
         func injectWithRetries(_ wv: WKWebView) {
             guard let iv = wv as? InsetsWebView else { return }
